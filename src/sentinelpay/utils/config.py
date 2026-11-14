@@ -76,6 +76,10 @@ class Paths:
     def quarantine(self) -> str:
         return f"{self.data_root}/delta/silver_quarantine"
 
+    @property
+    def gold(self) -> str:
+        return f"{self.data_root}/delta/gold_features"
+
     def report(self, name: str) -> str:
         """Path of a JSON report under the reports directory."""
         return f"{self.reports_dir}/{name}"

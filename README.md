@@ -1,6 +1,6 @@
 # SentinelPay: Real-Time Card Fraud Detection
 
-> 🚧 **Work in progress.** Phase 1 of 7 (data foundation) is complete. Model training,
+> 🚧 **Work in progress.** Phases 1–2 of 7 (data foundation, features) are complete. Model training,
 > streaming scoring, drift monitoring and the interactive dashboard are on the
 > [roadmap](#roadmap) below.
 
@@ -27,7 +27,7 @@ make demo
 ```
 
 `make demo` creates a virtualenv with pinned dependencies, generates ~500k transactions,
-and runs them through the bronze and silver layers. It takes under a minute on a laptop.
+and runs them through the bronze, silver and gold (feature) layers in about a minute and a half.
 Use `SAMPLE_SIZE=50000 make demo` for a faster run.
 
 If Java isn't found, `make` tells you how to install it
@@ -39,7 +39,8 @@ If Java isn't found, `make` tells you how to install it
 | `make app` | Open the dashboard at http://localhost:8501 (after `make demo`) |
 | `make test` | Run the test suite with coverage |
 | `make lint` / `make format` | Ruff lint and format |
-| `make generate` / `bronze` / `silver` | Run a single step |
+| `make generate` / `bronze` / `silver` / `gold` | Run a single step |
+| `make docs` | Regenerate the feature registry doc |
 | `make clean` | Delete generated data and reports |
 
 ## What exists today (Phase 1)
@@ -51,6 +52,9 @@ flowchart LR
     B --> S[(Silver<br/>validated, de-duplicated)]
     B --> Q[(Quarantine<br/>with reject reasons)]
     S --> DQ[reports/dq_metrics.json]
+    S --> GF[(Gold<br/>point-in-time features)]
+    R[[Feature registry]] -.defines.-> GF
+    R -.defines.-> OF[Online features<br/>for real-time scoring]
 ```
 
 * **Synthetic data generator** ([`generator.py`](src/sentinelpay/data/generator.py)):
@@ -67,6 +71,13 @@ flowchart LR
 * **Silver** ([`silver.py`](src/sentinelpay/pipeline/silver.py)): validates every row,
   sends failures to a quarantine table with *all* their reject reasons, de-duplicates
   re-sent messages, and writes data-quality metrics.
+* **Gold feature table** ([`spark_features.py`](src/sentinelpay/features/spark_features.py)):
+  26 point-in-time features per transaction. They cover velocity, amount behaviour,
+  impossible-travel speed, new merchant/device, time of day, and merchant risk using only
+  labels known at the time. Every feature is defined once in the
+  [feature registry](docs/features.md). A pure-Python
+  [online version](src/sentinelpay/features/online_features.py) for real-time scoring is
+  tested to give identical values (training/serving parity).
 * **Dashboard preview** ([`app/`](app/)): a Streamlit *Data Explorer* with four tabs.
   It shows the data's shape, walks through a real example of each fraud pattern (with a
   map for impossible travel), checks injected data problems against what silver caught,
@@ -78,7 +89,7 @@ flowchart LR
 | Phase | Scope | Status |
 |---|---|---|
 | 1. Foundation | Config, generator, bronze/silver, data quality | ✅ |
-| 2. Features | Point-in-time PySpark features, feature registry, online/offline parity | ⏳ |
+| 2. Features | Point-in-time PySpark features, feature registry, online/offline parity | ✅ |
 | 3. Model | LightGBM vs. baseline, cost-based threshold, SHAP reason codes, MLflow registry | ⏳ |
 | 4. Scoring & monitoring | Batch + Structured Streaming scoring, PSI drift, delayed-label metrics | ⏳ |
 | 5. GUI | 8-page Streamlit dashboard, hosted demo | ⏳ |
@@ -88,6 +99,7 @@ flowchart LR
 ## Docs
 
 * [Design decisions](docs/design_decisions.md)
+* [Feature registry](docs/features.md)
 * [Data dictionary](docs/data_dictionary.md)
 
 ## License

@@ -49,6 +49,23 @@ def cmd_silver(settings: Settings, args: argparse.Namespace) -> None:
     _with_spark(silver.run)(settings, args)
 
 
+def cmd_gold(settings: Settings, args: argparse.Namespace) -> None:
+    from sentinelpay.features import spark_features
+
+    _with_spark(spark_features.run)(settings, args)
+
+
+FEATURES_DOC = Path(__file__).resolve().parents[2] / "docs" / "features.md"
+
+
+def cmd_features_doc(settings: Settings, args: argparse.Namespace) -> None:
+    """Regenerate docs/features.md from the feature registry."""
+    from sentinelpay.features.registry import to_markdown
+
+    FEATURES_DOC.write_text(to_markdown() + "\n")
+    log.info("wrote %s", FEATURES_DOC)
+
+
 def reset_lakehouse(settings: Settings) -> None:
     """Delete all Delta tables so the demo always rebuilds from a clean slate.
 
@@ -64,6 +81,7 @@ def reset_lakehouse(settings: Settings) -> None:
 def cmd_demo(settings: Settings, args: argparse.Namespace) -> None:
     """Rebuild everything from scratch, in order, and record how long each step took."""
     from sentinelpay.data import generator
+    from sentinelpay.features import spark_features
     from sentinelpay.pipeline import bronze, silver
     from sentinelpay.utils.spark import get_spark
 
@@ -77,6 +95,8 @@ def cmd_demo(settings: Settings, args: argparse.Namespace) -> None:
         bronze.run(spark, settings)
     with timed("silver", timings):
         silver.run(spark, settings)
+    with timed("gold", timings):
+        spark_features.run(spark, settings)
 
     timings["total"] = round(sum(timings.values()), 2)
     write_json(settings.paths.report("timings.json"), timings)
@@ -87,6 +107,8 @@ COMMANDS: dict[str, tuple[Callable[[Settings, argparse.Namespace], None], str]] 
     "generate": (cmd_generate, "generate synthetic history + production feeds"),
     "bronze": (cmd_bronze, "ingest the history landing zone into the bronze Delta table"),
     "silver": (cmd_silver, "validate, quarantine and de-duplicate bronze into silver"),
+    "gold": (cmd_gold, "build the point-in-time gold feature table from silver"),
+    "features-doc": (cmd_features_doc, "regenerate docs/features.md from the feature registry"),
     "demo": (cmd_demo, "run the full pipeline end to end"),
 }
 

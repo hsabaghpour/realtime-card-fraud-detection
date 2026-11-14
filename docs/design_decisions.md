@@ -91,6 +91,74 @@ production scale, silver would be updated incrementally with `MERGE INTO` on
 `transaction_id`, reading only new bronze data via Delta Change Data Feed or Structured
 Streaming.
 
+## Features (Phase 2)
+
+### Point-in-time correctness: strictly-before windows
+Every feature for a transaction at time `t` uses only rows with `epoch <= t - 1`. In
+Spark this is a window frame `rangeBetween(-W, -1)` over epoch seconds, partitioned by
+card or merchant. Consequences, each covered by a test:
+* The "1h" window covers `[t - 3600, t - 1]`. A transaction exactly one hour earlier
+  counts; one 3,601 seconds earlier doesn't.
+* Two transactions on the same card in the same second don't see each other. In a
+  real-time system neither is processed when the other arrives.
+* Adding *future* transactions never changes any past feature. The test builds features,
+  adds later rows (including a fraud whose label arrives almost instantly), rebuilds,
+  and asserts the earlier rows are byte-identical.
+
+Why it matters: a feature that accidentally includes the current or a later
+transaction makes offline metrics look excellent and then collapses in production.
+
+### Merchant fraud rate without label leakage
+The merchant's historical fraud rate may only count frauds **known** before `t`, i.e.
+`label_available_ts < t`. A naive self-join (each transaction × all earlier transactions
+at its merchant) is quadratic. Instead, each confirmed fraud becomes an *event* at its
+`label_available_ts` and each transaction a *query* at its `ts`. Both go in one timeline
+per merchant, and a running sum strictly before each query gives the known-fraud count:
+one sort per merchant, no join explosion.
+
+Two further choices:
+* **Denominator = all earlier transactions**, not only labelled ones. Legit transactions
+  are only "confirmed" when the 45-day chargeback window closes, while frauds are
+  confirmed after about 10 days. Dividing by labelled transactions would make every
+  merchant look close to 100% fraud for its first six weeks (label-maturity bias).
+* **Bayesian smoothing** towards a 0.5% prior with strength 50, so a new merchant with
+  one fraud out of two transactions doesn't show 50%.
+
+### Geography uses card-present purchases only
+Online merchants only have a registered HQ address, which says nothing about where the
+cardholder is. Distance from home, distance from the previous purchase and implied speed
+are therefore computed only for card-present transactions, against the previous
+*card-present* purchase. A test checks that an online purchase "in LA" doesn't break the
+NYC → NYC sequence around it. Speed uses a 1-minute minimum elapsed time, so two
+purchases in the same minute can't divide by zero.
+
+### One feature registry, two implementations, a parity test
+Training uses Spark over months of data. Real-time scoring needs one transaction in
+milliseconds, which Spark can't do. So there are two implementations, `spark_features.py`
+and `online_features.py` (pandas), and the classic risk of **training/serving skew**: a
+feature computed slightly differently online than in training silently degrades the
+model.
+
+Defences:
+* Both read every constant (windows, night hours, smoothing) from `registry.py`.
+* `test_feature_parity.py` runs the real pipeline on generated data and recomputes every
+  feature for every fraud row plus 300 random rows with the online function, using only
+  raw history. All values must match.
+* The parity test was itself checked by mutation: injecting a label-leakage bug into the
+  online code made it fail with 44 mismatches.
+
+The registry also generates `docs/features.md`, and a test fails if the doc is stale.
+
+### Gold is a full rebuild, partitioned by date
+At this size, rebuilding gold takes about 35 seconds. At production scale the same window
+logic would run incrementally (Structured Streaming with state, or a feature store such
+as Databricks Feature Engineering that keeps per-card aggregates and serves them online).
+Phase 4 discusses this trade-off for streaming scoring.
+
+### Hour of day is UTC
+The synthetic data has no time zones, so hour features use UTC. A real system would use
+the merchant's (or cardholder's) local time, since "3 am" only means "unusual" locally.
+
 ## Runtime
 
 ### Spark 4 + Delta 4, Java 17

@@ -10,7 +10,7 @@ CLI    := $(BIN)/sentinelpay
 # Spark 4 needs Java 17 or 21. Resolve it per recipe (fails with install advice).
 WITH_JAVA := JAVA_HOME=$$(./scripts/find_java.sh) && export JAVA_HOME &&
 
-.PHONY: help install demo generate bronze silver test test-fast lint format lock clean \
+.PHONY: help install demo generate bronze silver gold docs test test-fast lint format lock clean \
         app airflow mlflow demo-artifacts
 
 help: ## Show this help
@@ -38,6 +38,12 @@ bronze: install ## Ingest landing data into the bronze Delta table
 
 silver: install ## Build silver + quarantine tables and DQ metrics
 	@$(WITH_JAVA) $(CLI) silver
+
+gold: install ## Build the point-in-time gold feature table
+	@$(WITH_JAVA) $(CLI) gold
+
+docs: install ## Regenerate docs/features.md from the feature registry
+	@$(CLI) features-doc
 
 test: install ## Run all tests with coverage
 	@$(WITH_JAVA) $(BIN)/pytest --cov --cov-report=term-missing

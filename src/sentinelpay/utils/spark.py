@@ -53,6 +53,9 @@ def get_spark(settings: Settings, app_name: str = "sentinelpay") -> SparkSession
         .config("spark.sql.shuffle.partitions", str(settings.spark.shuffle_partitions))
         .config("spark.ui.enabled", str(settings.spark.ui_enabled).lower())
         .config("spark.ui.showConsoleProgress", "false")
+        # Arrow makes Spark -> pandas conversion fast and avoids a timestamp bug
+        # in PySpark's slow (non-Arrow) path with tz-aware pandas columns.
+        .config("spark.sql.execution.arrow.pyspark.enabled", "true")
         .config("spark.driver.extraJavaOptions", f"-Dlog4j.configurationFile=file:{log4j}")
         # Keep Delta's own snapshot work light on small local tables.
         .config("spark.databricks.delta.snapshotPartitions", "2")
