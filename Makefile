@@ -46,12 +46,12 @@ test-fast: install ## Run tests that don't need Spark
 	@$(BIN)/pytest -m "not spark"
 
 lint: install ## Lint and check formatting
-	@$(BIN)/ruff check src tests
-	@$(BIN)/ruff format --check src tests
+	@$(BIN)/ruff check src tests app
+	@$(BIN)/ruff format --check src tests app
 
 format: install ## Auto-fix lint issues and format code
-	@$(BIN)/ruff check --fix src tests
-	@$(BIN)/ruff format src tests
+	@$(BIN)/ruff check --fix src tests app
+	@$(BIN)/ruff format src tests app
 
 lock: ## Re-resolve requirements.lock from pyproject.toml (maintainers only)
 	$(PYTHON) -m venv /tmp/sentinelpay-lock && /tmp/sentinelpay-lock/bin/pip install -q -e ".[dev]"
@@ -61,5 +61,8 @@ lock: ## Re-resolve requirements.lock from pyproject.toml (maintainers only)
 clean: ## Delete generated data and reports
 	rm -rf data reports spark-warehouse metastore_db derby.log
 
-app airflow mlflow demo-artifacts:
+app: install ## Launch the dashboard at http://localhost:8501 (run `make demo` first)
+	@$(BIN)/streamlit run app/streamlit_app.py
+
+airflow mlflow demo-artifacts:
 	@echo "'make $@' arrives in a later phase (see the roadmap in README.md)."

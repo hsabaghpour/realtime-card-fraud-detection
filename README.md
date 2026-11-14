@@ -36,6 +36,7 @@ If Java isn't found, `make` tells you how to install it
 | Command | What it does |
 |---|---|
 | `make demo` | Run the full pipeline end to end |
+| `make app` | Open the dashboard at http://localhost:8501 (after `make demo`) |
 | `make test` | Run the test suite with coverage |
 | `make lint` / `make format` | Ruff lint and format |
 | `make generate` / `bronze` / `silver` | Run a single step |
@@ -66,6 +67,11 @@ flowchart LR
 * **Silver** ([`silver.py`](src/sentinelpay/pipeline/silver.py)): validates every row,
   sends failures to a quarantine table with *all* their reject reasons, de-duplicates
   re-sent messages, and writes data-quality metrics.
+* **Dashboard preview** ([`app/`](app/)): a Streamlit *Data Explorer* with four tabs.
+  It shows the data's shape, walks through a real example of each fraud pattern (with a
+  map for impossible travel), checks injected data problems against what silver caught,
+  and compares the drift scenarios. It reads Delta tables with `deltalake`, so it needs
+  no Spark or Java. The full 8-page dashboard arrives in Phase 5.
 
 ## Roadmap
 
