@@ -15,11 +15,13 @@ APP = Path(__file__).resolve().parents[1] / "app" / "streamlit_app.py"
 def pipeline_outputs(spark, settings, monkeypatch):
     """Run the tiny pipeline and point the app at its outputs."""
     from sentinelpay.data import generator
+    from sentinelpay.features import spark_features
     from sentinelpay.pipeline import bronze, silver
 
     generator.run(settings, None)
     bronze.run(spark, settings)
     silver.run(spark, settings)
+    spark_features.run(spark, settings)
     monkeypatch.setenv("SENTINELPAY_DATA_ROOT", settings.paths.data_root)
     monkeypatch.setenv("SENTINELPAY_REPORTS_DIR", settings.paths.reports_dir)
 
@@ -31,7 +33,18 @@ def test_data_explorer_renders(pipeline_outputs):
     at.run()
     assert not at.exception, at.exception
     assert at.title[0].value == "🔎 Data Explorer"
-    assert len(at.tabs) == 4
+    assert len(at.tabs) == 5
+
+
+def test_every_feature_chart_renders(pipeline_outputs):
+    """Each of the 26 features (flags, counts, deciles, categories) must chart cleanly."""
+    from streamlit.testing.v1 import AppTest
+
+    at = AppTest.from_file(str(APP), default_timeout=60)
+    at.run()
+    for option in at.selectbox(key="feature").options:
+        at.selectbox(key="feature").set_value(option).run()
+        assert not at.exception, f"{option}: {at.exception}"
 
 
 def test_each_fraud_pattern_example_renders(pipeline_outputs):

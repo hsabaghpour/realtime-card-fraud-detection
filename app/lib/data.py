@@ -63,6 +63,17 @@ def quarantine() -> pd.DataFrame:
     return _read_delta(paths().quarantine)
 
 
+def gold_exists() -> bool:
+    p = paths()
+    return Path(p.gold).exists() and Path(p.report("feature_summary.json")).exists()
+
+
+def gold() -> pd.DataFrame:
+    from sentinelpay.features.registry import FEATURE_NAMES
+
+    return _read_delta(paths().gold, ("transaction_id", "is_fraud", *FEATURE_NAMES))
+
+
 @st.cache_data
 def _read_json(path: str) -> dict[str, Any]:
     return json.loads(Path(path).read_text())

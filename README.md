@@ -78,7 +78,7 @@ flowchart LR
   [feature registry](docs/features.md). A pure-Python
   [online version](src/sentinelpay/features/online_features.py) for real-time scoring is
   tested to give identical values (training/serving parity).
-* **Dashboard preview** ([`app/`](app/)): a Streamlit *Data Explorer* with four tabs.
+* **Dashboard preview** ([`app/`](app/)): a Streamlit *Data Explorer* with five tabs, including a Features tab that shows how the fraud rate changes with each feature.
   It shows the data's shape, walks through a real example of each fraud pattern (with a
   map for impossible travel), checks injected data problems against what silver caught,
   and compares the drift scenarios. It reads Delta tables with `deltalake`, so it needs

@@ -56,8 +56,8 @@ dq = data.report("dq_metrics.json")
 gen = data.report("generation_summary.json")
 fraud = df[df["is_fraud"] == 1]
 
-tab_overview, tab_patterns, tab_quality, tab_drift = st.tabs(
-    ["Overview", "Fraud patterns", "Data quality", "Drift scenarios"]
+tab_overview, tab_patterns, tab_features, tab_quality, tab_drift = st.tabs(
+    ["Overview", "Fraud patterns", "Features", "Data quality", "Drift scenarios"]
 )
 
 
@@ -378,6 +378,150 @@ with tab_patterns:
             "device_id": "Device",
         },
     )
+
+
+# --------------------------------------------------------------------------- #
+# Features
+# --------------------------------------------------------------------------- #
+MIN_BUCKET_ROWS = 30  # hide buckets too small for a stable fraud rate
+
+
+def _num(x: float, digits: int) -> str:
+    """Plain (never scientific) number with ``digits`` significant digits."""
+    if abs(x) >= 1000:
+        return f"{x:,.0f}"
+    return np.format_float_positional(x, precision=digits, fractional=False, trim="-")
+
+
+def _interval_labels(intervals, lowest: float) -> list[str]:
+    """Readable 'low – high' labels, with just enough precision to stay unique.
+
+    Features like merchant_fraud_rate_prior vary in the 4th decimal, so a fixed
+    rounding would turn different deciles into identical labels. The first
+    edge is clamped to the real minimum (qcut pads it slightly below).
+    """
+    edges = [(max(iv.left, lowest), iv.right) for iv in intervals]
+    for digits in range(2, 8):
+        labels = [f"{_num(lo, digits)} – {_num(hi, digits)}" for lo, hi in edges]
+        if len(set(labels)) == len(labels):
+            return labels
+    return [str(iv) for iv in intervals]
+
+
+def fraud_rate_by_bucket(values: pd.Series, is_fraud: pd.Series) -> pd.DataFrame:
+    """Fraud rate per value bucket of one feature (deciles for continuous ones)."""
+    frame = pd.DataFrame({"v": values, "y": is_fraud})
+    known = frame[frame["v"].notna()]
+    v = known["v"]
+
+    if v.dtype == object:  # categorical: one bar per category, riskiest first
+        bucket, order = v, None
+    elif set(v.unique()) <= {0, 1}:  # yes/no flag
+        bucket, order = v.map({0: "No", 1: "Yes"}), ["No", "Yes"]
+    elif v.nunique() <= 24:  # small integer range (hour, counts): one bar per value
+        bucket = v.astype(int)
+        order = sorted(bucket.unique())
+    else:  # continuous: deciles
+        bins = pd.qcut(v, q=10, duplicates="drop")
+        order = _interval_labels(bins.cat.categories, lowest=float(v.min()))
+        bucket = bins.cat.rename_categories(order).astype(str)
+
+    out = known.assign(bucket=bucket).groupby("bucket")["y"].agg(rows="size", fraud_rate="mean")
+    out = (
+        out.sort_values("fraud_rate", ascending=False)
+        if order is None
+        else out.reindex([o for o in order if o in out.index])
+    )
+    out.index = out.index.astype(str)
+
+    missing = frame[frame["v"].isna()]
+    if len(missing):
+        out.loc["not applicable"] = [len(missing), missing["y"].mean()]
+    return out[out["rows"] >= MIN_BUCKET_ROWS].reset_index()
+
+
+with tab_features:
+    from sentinelpay.features.registry import FEATURES, by_name
+
+    if not data.gold_exists():
+        st.info("The feature table hasn't been built yet. Run `make demo`, then reload.")
+    else:
+        st.markdown(
+            "A model can't learn much from one transaction on its own. **Features** add "
+            "context: how busy this card has been, how far it travelled, whether the device "
+            "is new. Every feature uses only information available *before* the transaction, "
+            "exactly as it would be at the moment of payment."
+        )
+        gold = data.gold()
+        summary = data.report("feature_summary.json")["features"]
+        base_rate = gold["is_fraud"].mean()
+
+        c = st.columns(3)
+        c[0].metric("Features per transaction", len(FEATURES))
+        c[1].metric("Feature groups", len({f.group for f in FEATURES}))
+        c[2].metric("Rows in feature table", f"{len(gold):,}")
+
+        options = {f"{f.group.capitalize()} · {f.name}": f.name for f in FEATURES}
+        default = list(options).index("Geo · speed_kmh_from_prev_cp")
+        name = options[st.selectbox("Feature", list(options), index=default, key="feature")]
+        feat = by_name(name)
+        st.info(f"**{feat.name}**: {feat.description}\n\n**Why it helps:** {feat.business_meaning}")
+
+        buckets = fraud_rate_by_bucket(gold[name], gold["is_fraud"])
+        fig = go.Figure(
+            go.Bar(
+                x=buckets["bucket"],
+                y=100 * buckets["fraud_rate"],
+                marker=dict(color=FRAUD, cornerradius=4),
+                customdata=buckets["rows"],
+                hovertemplate="%{x}<br>fraud rate %{y:.2f}%"
+                "<br>%{customdata:,} transactions<extra></extra>",
+            )
+        )
+        fig.add_hline(
+            y=100 * base_rate,
+            line=dict(color=INK_2, width=1.5, dash="dash"),
+            annotation_text=f"average {base_rate:.2%}",
+            annotation_position="top left",
+            annotation_font_color=INK_2,
+        )
+        fig.update_xaxes(type="category", title=f"{name} (value range)")
+        fig.update_yaxes(title="Fraud rate", ticksuffix="%")
+        st.plotly_chart(style(fig, height=340, legend=False), width="stretch", config=PLOTLY_CONFIG)
+        st.caption(
+            "Fraud rate for transactions in each value range of this feature. Bars far above "
+            "the dashed average line show where the feature flags risk. Continuous features "
+            f"are split into deciles; ranges with fewer than {MIN_BUCKET_ROWS} transactions are "
+            "hidden."
+        )
+
+        st.subheader("All features at a glance")
+        table = pd.DataFrame(
+            [
+                {
+                    "Feature": f.name,
+                    "Group": f.group,
+                    "Avg (legit)": summary.get(f.name, {}).get("mean_legit"),
+                    "Avg (fraud)": summary.get(f.name, {}).get("mean_fraud"),
+                    "Why it helps": f.business_meaning,
+                }
+                for f in FEATURES
+            ]
+        )
+        st.dataframe(
+            table,
+            hide_index=True,
+            width="stretch",
+            column_config={
+                "Avg (legit)": st.column_config.NumberColumn(format="%.3g"),
+                "Avg (fraud)": st.column_config.NumberColumn(format="%.3g"),
+                "Why it helps": st.column_config.TextColumn(width="large"),
+            },
+        )
+        st.caption(
+            "Averages for legitimate vs fraudulent transactions. A big gap means the feature "
+            "separates the two well. Full definitions: docs/features.md."
+        )
 
 
 # --------------------------------------------------------------------------- #

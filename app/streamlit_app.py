@@ -11,8 +11,8 @@ pages = [
 with st.sidebar:
     st.markdown("### 🛡️ SentinelPay")
     st.caption(
-        "Card fraud detection platform. **Preview:** the data foundation (Phase 1). "
-        "Model, live scoring and drift monitoring pages arrive in later phases."
+        "Card fraud detection platform. **Preview:** the data foundation and features "
+        "(Phases 1–2). Model, live scoring and drift monitoring pages arrive in later phases."
     )
 
 st.navigation(pages).run()
