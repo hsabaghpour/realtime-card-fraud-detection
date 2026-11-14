@@ -1,0 +1,4 @@
+# Local laptop overrides (default environment). Sized for an 8 GB machine.
+spark:
+  master: "local[4]"
+  driver_memory: "2g"

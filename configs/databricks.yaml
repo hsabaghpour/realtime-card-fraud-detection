@@ -1,0 +1,9 @@
+# Databricks overrides. Selected with SENTINELPAY_ENV=databricks.
+# On Databricks the Spark session already exists, so spark.* keys are ignored
+# except shuffle_partitions. Paths point at a Unity Catalog volume.
+spark:
+  shuffle_partitions: 32
+
+paths:
+  data_root: "/Volumes/workspace/sentinelpay/data"
+  reports_dir: "/Volumes/workspace/sentinelpay/reports"

@@ -1,0 +1,33 @@
+# Base configuration shared by every environment.
+# Environment files (local.yaml, databricks.yaml) override keys from here,
+# and a few environment variables override both (see utils/config.py).
+
+seed: 42
+
+data:
+  # Transactions in the ~6-month "history" period (training/validation/test).
+  # The "production" period is sized proportionally (same daily volume).
+  sample_size: 500000
+  start_date: "2025-01-01"
+  history_days: 182
+  production_days: 30
+  # Target share of fraudulent transactions (0.5-1% is realistic for card fraud).
+  fraud_rate: 0.008
+  # Share of malformed / duplicated records injected into the raw feed so the
+  # silver layer's validation and quarantine logic has real work to do.
+  dirty_rate: 0.002
+  # Chargeback delay: fraud is confirmed a median of ~10 days after the
+  # transaction; a legit transaction is considered confirmed once the
+  # chargeback window has closed.
+  label_delay_median_days: 10
+  chargeback_window_days: 45
+
+spark:
+  master: "local[*]"
+  driver_memory: "2g"
+  shuffle_partitions: 8
+  ui_enabled: false
+
+paths:
+  data_root: "data"
+  reports_dir: "reports"
