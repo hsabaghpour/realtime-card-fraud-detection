@@ -10,6 +10,9 @@ an Airflow retry) therefore never double-loads data.
 
 from __future__ import annotations
 
+from pathlib import Path
+from urllib.parse import urlparse
+
 from delta.tables import DeltaTable
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
@@ -42,10 +45,32 @@ def already_ingested(spark: SparkSession, bronze_path: str) -> set[str]:
     return {r.source_file for r in rows}
 
 
+class StaleBronzeError(RuntimeError):
+    """Bronze holds data from landing files that have since been replaced."""
+
+
+def check_not_stale(done: set[str], source_dir: str) -> None:
+    """Fail if bronze contains files that are no longer in the landing zone.
+
+    That happens when the data was regenerated (e.g. a different SAMPLE_SIZE)
+    on top of an existing lakehouse. Appending would silently mix the old and
+    new datasets, so we stop and tell the user how to rebuild instead.
+    """
+    current = {p.name for p in Path(source_dir).glob("*.parquet")}
+    stale = sorted({Path(urlparse(f).path).name for f in done} - current)
+    if stale:
+        raise StaleBronzeError(
+            f"bronze contains data from landing files that no longer exist ({', '.join(stale)}). "
+            "The landing data was regenerated. Rebuild from scratch with `make demo`, "
+            "or run `make clean` first."
+        )
+
+
 def ingest(spark: SparkSession, source_dir: str, bronze_path: str) -> int:
     """Append new files from ``source_dir`` to bronze. Returns rows appended."""
     raw = read_raw(spark, source_dir)
     done = already_ingested(spark, bronze_path)
+    check_not_stale(done, source_dir)
     if done:
         raw = raw.filter(~F.col("source_file").isin(list(done)))
 

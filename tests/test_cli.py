@@ -20,6 +20,6 @@ def test_generate_command_writes_landing(tmp_path, monkeypatch):
     monkeypatch.setenv("SENTINELPAY_DATA_ROOT", str(tmp_path / "data"))
     monkeypatch.setenv("SENTINELPAY_REPORTS_DIR", str(tmp_path / "reports"))
     assert cli.main(["--sample-size", "3000", "generate", "--drift-scenario", "none"]) == 0
-    assert (tmp_path / "data/landing/history/transactions.parquet").exists()
-    assert (tmp_path / "data/landing/production/scenario=none/transactions.parquet").exists()
+    assert list((tmp_path / "data/landing/history").glob("*_n3000.parquet"))
+    assert list((tmp_path / "data/landing/production/scenario=none").glob("*_n3000.parquet"))
     assert not Path(tmp_path / "data/landing/production/scenario=spending_shift").exists()

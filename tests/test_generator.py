@@ -155,7 +155,20 @@ def test_run_writes_landing_and_summary(settings):
     from pathlib import Path
 
     summary = g.run(settings, ["none"])
-    assert Path(settings.paths.landing_history, "transactions.parquet").exists()
-    assert Path(settings.paths.landing_production("none"), "transactions.parquet").exists()
+    name = g.landing_file_name(settings)
+    assert name == f"transactions_seed{settings.seed}_n{settings.data.sample_size}.parquet"
+    assert Path(settings.paths.landing_history, name).exists()
+    assert Path(settings.paths.landing_production("none"), name).exists()
     assert Path(settings.paths.report("generation_summary.json")).exists()
     assert summary["history"]["rows"] > settings.data.sample_size
+
+
+def test_regenerating_replaces_old_landing_file(settings):
+    from dataclasses import replace
+    from pathlib import Path
+
+    g.run(settings, ["none"])
+    bigger = replace(settings, data=replace(settings.data, sample_size=6_000))
+    g.run(bigger, ["none"])
+    files = [p.name for p in Path(settings.paths.landing_history).glob("*.parquet")]
+    assert files == [g.landing_file_name(bigger)]

@@ -777,13 +777,22 @@ def generate_period(
     return df, summary
 
 
-def write_landing(df: pd.DataFrame, directory: str) -> Path:
-    """Write the raw feed as a single parquet file in ``directory`` (overwrites)."""
+def landing_file_name(settings: Settings) -> str:
+    """File name that identifies the data's content (seed + size).
+
+    Regenerating with a different seed or size therefore produces a *new*
+    file name, so bronze can tell new data from data it has already ingested.
+    """
+    return f"transactions_seed{settings.seed}_n{settings.data.sample_size}.parquet"
+
+
+def write_landing(df: pd.DataFrame, directory: str, file_name: str) -> Path:
+    """Write the raw feed as a single parquet file, replacing older landing files."""
     out_dir = Path(directory)
     out_dir.mkdir(parents=True, exist_ok=True)
     for old in out_dir.glob("*.parquet"):
         old.unlink()
-    path = out_dir / "transactions.parquet"
+    path = out_dir / file_name
     # Spark can't read nanosecond parquet timestamps, so store microseconds.
     df.to_parquet(path, index=False, coerce_timestamps="us", allow_truncated_timestamps=True)
     return path
@@ -797,7 +806,8 @@ def run(settings: Settings, scenarios: list[str] | None = None) -> dict[str, Any
 
     summaries: dict[str, Any] = {"seed": settings.seed, "sample_size": d.sample_size}
     df, summary = generate_period(settings, "history", population=pop)
-    path = write_landing(df, settings.paths.landing_history)
+    file_name = landing_file_name(settings)
+    path = write_landing(df, settings.paths.landing_history, file_name)
     log.info(
         "history: %s rows (fraud rate %.3f%%) -> %s",
         f"{len(df):,}",
@@ -809,7 +819,7 @@ def run(settings: Settings, scenarios: list[str] | None = None) -> dict[str, Any
     summaries["production"] = {}
     for scenario in scenarios:
         df, summary = generate_period(settings, "production", scenario, population=pop)
-        path = write_landing(df, settings.paths.landing_production(scenario))
+        path = write_landing(df, settings.paths.landing_production(scenario), file_name)
         log.info(
             "production[%s]: %s rows (fraud rate %.3f%%) -> %s",
             scenario,

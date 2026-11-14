@@ -61,9 +61,18 @@ whose schema differs from the table. A producer that changes a column type fails
 at ingestion instead of quietly corrupting features.
 
 ### Idempotent bronze ingestion
-Each bronze row records its source file, and files already in the table are skipped. An
-Airflow retry or a re-run of `make demo` never double-loads data. At larger scale this
-would use Databricks Auto Loader, which tracks ingested files in a checkpoint.
+Each bronze row records its source file, and files already in the table are skipped, so
+an Airflow retry never double-loads data. At larger scale this would use Databricks Auto
+Loader, which tracks ingested files in a checkpoint.
+
+File-level idempotency only works if a file name always means the same content. An early
+version always wrote `transactions.parquet`. Regenerating with a different `SAMPLE_SIZE`
+reused the name, bronze skipped the "already ingested" file, and silver was silently
+rebuilt from the *old* data. Two fixes:
+* Landing files are named after their content (`transactions_seed42_n500000.parquet`).
+* Bronze raises `StaleBronzeError` if it holds rows from files no longer in the landing
+  zone, instead of appending and mixing two datasets. `make demo` always rebuilds the
+  lakehouse from scratch, and a regression test covers the scenario.
 
 ### Quarantine instead of drop
 Invalid rows go to `silver_quarantine` with **all** their failing rules

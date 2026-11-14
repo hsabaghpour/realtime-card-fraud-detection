@@ -133,3 +133,32 @@ def test_end_to_end_generate_bronze_silver(spark, settings):
         read_json(settings.paths.report("dq_metrics.json"))["silver_rows"] == history["clean_rows"]
     )
     assert metrics["silver_ts_range"][0].startswith(settings.data.start_date)
+
+
+def test_regenerated_landing_is_detected_as_stale(spark, settings):
+    """Regenerating with a new size must not silently mix datasets in bronze."""
+    from dataclasses import replace
+
+    from sentinelpay.data import generator
+
+    generator.run(settings, ["none"])
+    bronze.run(spark, settings)
+
+    bigger = replace(settings, data=replace(settings.data, sample_size=6_000))
+    generator.run(bigger, ["none"])
+    with pytest.raises(bronze.StaleBronzeError, match="regenerated"):
+        bronze.run(spark, bigger)
+
+
+def test_demo_reset_removes_lakehouse(spark, settings):
+    from pathlib import Path
+
+    from sentinelpay.cli import reset_lakehouse
+    from sentinelpay.data import generator
+
+    generator.run(settings, ["none"])
+    bronze.run(spark, settings)
+    assert Path(settings.paths.bronze).exists()
+    reset_lakehouse(settings)
+    assert not Path(settings.paths.bronze).exists()
+    assert Path(settings.paths.landing_history).exists()  # landing is left alone

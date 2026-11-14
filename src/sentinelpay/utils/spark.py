@@ -7,7 +7,7 @@ import sys
 
 from pyspark.sql import SparkSession
 
-from sentinelpay.utils.config import Settings
+from sentinelpay.utils.config import CONFIG_DIR, Settings
 
 
 def is_databricks() -> bool:
@@ -35,6 +35,10 @@ def get_spark(settings: Settings, app_name: str = "sentinelpay") -> SparkSession
     # mismatch (e.g. driver in .venv on 3.11, system python 3.14).
     os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
     os.environ.setdefault("PYSPARK_DRIVER_PYTHON", sys.executable)
+    # Local mode never needs the network interface; binding to loopback avoids
+    # the "hostname resolves to a loopback address" warning on laptops.
+    os.environ.setdefault("SPARK_LOCAL_IP", "127.0.0.1")
+    log4j = CONFIG_DIR / "log4j2.properties"
 
     builder = (
         SparkSession.builder.appName(app_name)
@@ -49,6 +53,7 @@ def get_spark(settings: Settings, app_name: str = "sentinelpay") -> SparkSession
         .config("spark.sql.shuffle.partitions", str(settings.spark.shuffle_partitions))
         .config("spark.ui.enabled", str(settings.spark.ui_enabled).lower())
         .config("spark.ui.showConsoleProgress", "false")
+        .config("spark.driver.extraJavaOptions", f"-Dlog4j.configurationFile=file:{log4j}")
         # Keep Delta's own snapshot work light on small local tables.
         .config("spark.databricks.delta.snapshotPartitions", "2")
     )

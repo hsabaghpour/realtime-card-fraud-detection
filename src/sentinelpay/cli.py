@@ -7,7 +7,9 @@ commands, so there is exactly one implementation of every pipeline step.
 from __future__ import annotations
 
 import argparse
+import shutil
 from collections.abc import Callable, Sequence
+from pathlib import Path
 
 from sentinelpay.data.generator import DRIFT_SCENARIOS
 from sentinelpay.utils.config import Settings, load_settings
@@ -47,12 +49,25 @@ def cmd_silver(settings: Settings, args: argparse.Namespace) -> None:
     _with_spark(silver.run)(settings, args)
 
 
+def reset_lakehouse(settings: Settings) -> None:
+    """Delete all Delta tables so the demo always rebuilds from a clean slate.
+
+    The demo regenerates the data on every run (possibly with a different
+    SAMPLE_SIZE), so keeping old tables would mix two datasets.
+    """
+    delta_dir = Path(settings.paths.data_root) / "delta"
+    if delta_dir.exists():
+        shutil.rmtree(delta_dir)
+        log.info("reset: removed existing lakehouse tables in %s", delta_dir)
+
+
 def cmd_demo(settings: Settings, args: argparse.Namespace) -> None:
-    """Run every implemented step in order and record how long each took."""
+    """Rebuild everything from scratch, in order, and record how long each step took."""
     from sentinelpay.data import generator
     from sentinelpay.pipeline import bronze, silver
     from sentinelpay.utils.spark import get_spark
 
+    reset_lakehouse(settings)
     timings: dict[str, float] = {}
     with timed("generate", timings):
         generator.run(settings, list(DRIFT_SCENARIOS))
