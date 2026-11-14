@@ -10,7 +10,7 @@ CLI    := $(BIN)/sentinelpay
 # Spark 4 needs Java 17 or 21. Resolve it per recipe (fails with install advice).
 WITH_JAVA := JAVA_HOME=$$(./scripts/find_java.sh) && export JAVA_HOME &&
 
-.PHONY: help install demo generate bronze silver gold docs test test-fast lint format lock clean \
+.PHONY: help install demo generate bronze silver gold train promote mlflow docs test test-fast lint format lock clean \
         app airflow mlflow demo-artifacts
 
 help: ## Show this help
@@ -42,6 +42,15 @@ silver: install ## Build silver + quarantine tables and DQ metrics
 gold: install ## Build the point-in-time gold feature table
 	@$(WITH_JAVA) $(CLI) gold
 
+train: install ## Train + evaluate models, register a challenger in MLflow
+	@$(CLI) train
+
+promote: install ## Promote the challenger to champion if it is better
+	@$(CLI) promote
+
+mlflow: install ## Open the MLflow UI at http://localhost:5000
+	@MLFLOW_DISABLE_AGENT_HINT=1 $(BIN)/mlflow ui --backend-store-uri sqlite:///mlflow.db --port 5000
+
 docs: install ## Regenerate docs/features.md from the feature registry
 	@$(CLI) features-doc
 
@@ -61,14 +70,15 @@ format: install ## Auto-fix lint issues and format code
 
 lock: ## Re-resolve requirements.lock from pyproject.toml (maintainers only)
 	$(PYTHON) -m venv /tmp/sentinelpay-lock && /tmp/sentinelpay-lock/bin/pip install -q -e ".[dev]"
+	/tmp/sentinelpay-lock/bin/pip check  # never write an inconsistent lock file
 	/tmp/sentinelpay-lock/bin/pip freeze --exclude-editable > requirements.lock
 	rm -rf /tmp/sentinelpay-lock
 
 clean: ## Delete generated data and reports
-	rm -rf data reports spark-warehouse metastore_db derby.log
+	rm -rf data reports mlruns mlflow.db spark-warehouse metastore_db derby.log
 
 app: install ## Launch the dashboard at http://localhost:8501 (run `make demo` first)
 	@$(BIN)/streamlit run app/streamlit_app.py
 
-airflow mlflow demo-artifacts:
+airflow demo-artifacts:
 	@echo "'make $@' arrives in a later phase (see the roadmap in README.md)."

@@ -152,6 +152,13 @@ ONLINE_MERCHANT_SHARE = 0.2
 N_FAVORITES = 12
 FAVORITE_PROB = 0.85  # share of card-present spend at a card's usual merchants
 TRIP_PROB = 0.25  # share of cards with one legitimate out-of-town trip per period
+
+# "Hard negatives": genuine behaviour that looks like fraud. Without these, every
+# fraud signal would be a perfect rule and any model would look unrealistically good.
+NIGHT_OWL_SHARE = 0.04
+BIG_TICKET_CATEGORIES = ("travel", "electronics_net", "home", "shopping_pos", "shopping_net")
+BIG_TICKET_PROB = 0.04
+LEGIT_NEW_DEVICE_PROB = 0.04
 SECONDS_PER_DAY = 86_400
 
 # Fraud mix in the history period (share of fraudulent *transactions*).
@@ -164,11 +171,11 @@ FRAUD_MIX: dict[str, float] = {
 }
 # Average transactions per fraud event, used to turn a row budget into events.
 FRAUD_EVENT_SIZE: dict[str, float] = {
-    "card_testing": 6.5,
+    "card_testing": 5.0,
     "impossible_travel": 2.0,
     "high_amount": 1.0,
-    "night_burst": 4.5,
-    "compromised_merchant": 27.5,
+    "night_burst": 3.5,
+    "compromised_merchant": 18.0,
     NEW_FRAUD_PATTERN: 3.0,
 }
 
@@ -255,6 +262,10 @@ def build_population(sample_size: int, history_days: int, seed: int) -> Populati
     cust_lon = CITY_LON[cust_city] + rng.normal(0, 0.2, n_customers)
     cust_amount_mult = rng.lognormal(0, 0.35, n_customers)
     cust_peak_hour = np.clip(rng.normal(15, 2.5, n_customers), 9, 21)
+    # ~4% are night owls (shift workers, students) whose spending peaks around
+    # 1 am, so "night-time" is a risk signal, not proof of fraud.
+    night_owl = rng.random(n_customers) < NIGHT_OWL_SHARE
+    cust_peak_hour = np.where(night_owl, rng.uniform(22, 27, n_customers) % 24, cust_peak_hour)
     cust_online_share = rng.beta(2, 5, n_customers)
     cust_n_devices = 1 + (rng.random(n_customers) < 0.3).astype(int)
 
@@ -411,9 +422,20 @@ def _generate_normal(
         * np.exp(rng.normal(0, CAT_SIGMA[cat]))
         * drift.amount_multiplier
     )
+    # Genuine big-ticket purchases (a TV, a flight): a few percent of purchases
+    # in these categories are 4-15x the usual size, so a large amount alone
+    # does not mean fraud.
+    big_ticket = np.isin(cat, [CAT_INDEX[c] for c in BIG_TICKET_CATEGORIES]) & (
+        rng.random(n) < BIG_TICKET_PROB
+    )
+    amount = np.where(big_ticket, amount * rng.uniform(4, 15, n), amount)
 
     # Device: online purchases come from one of the customer's own devices.
     device_k = np.where((pop.cust_n_devices[cust] == 2) & (rng.random(n) < 0.2), 1, 0)
+    # Genuine new devices (new phone, a work laptop): a new device id that the
+    # card has never used, so "new device" is a risk signal, not proof.
+    new_device = rng.random(n) < LEGIT_NEW_DEVICE_PROB
+    device_k = np.where(new_device, 2 + rng.integers(0, 1000, n), device_k)
     device = np.where(pop.merch_online[merchant], _device_ids(cust, device_k), None)
 
     return {
@@ -464,7 +486,16 @@ class _FraudInjector:
         self.cp_epoch = normal["epoch"][cp]
         self.cp_merchant = normal["merchant"][cp]
 
+        # Victims are chosen in proportion to how much each card is used (busy
+        # cards get skimmed and phished at least as often). Choosing uniformly
+        # would make "low-activity card" a spurious fraud signal that a model
+        # learns from the simulator rather than from fraud.
+        self.card_p = cnts / cnts.sum() if cnts.sum() else None
+
     # -- helpers ------------------------------------------------------------ #
+    def _victim(self) -> int:
+        return int(self.rng.choice(self.pop.n_cards, p=self.card_p))
+
     def _new_fraud_device(self) -> str:
         return f"FDEV{self.period_tag}{self._events:06d}"
 
@@ -491,13 +522,14 @@ class _FraudInjector:
     # -- patterns ----------------------------------------------------------- #
     def card_testing(self) -> None:
         """Burst of tiny online charges to check the card works, then a big one."""
-        card = int(self.rng.integers(self.pop.n_cards))
-        device = self._new_fraud_device()
+        card = self._victim()
+        # A third of testers work through the victim's hijacked session (no new device).
+        device = self._new_fraud_device() if self.rng.random() < 0.67 else None
         small = self.pop.merchants_in(["misc_net", "gift_cards", "shopping_net"])
         big = self.pop.merchants_in(["electronics_net", "shopping_net"])
         t = self._random_time()
-        for _ in range(int(self.rng.integers(3, 9))):
-            t += int(self.rng.uniform(20, 300))
+        for _ in range(int(self.rng.integers(2, 7))):
+            t += int(self.rng.uniform(60, 1200))  # spaced out to dodge velocity rules
             self._add(
                 card,
                 self._pick(small),
@@ -516,19 +548,22 @@ class _FraudInjector:
         last_city = self.pop.merch_city[last_merchant]
         dist = haversine_km(CITY_LAT[last_city], CITY_LON[last_city], CITY_LAT, CITY_LON)
         far_city = self._pick(np.flatnonzero(dist > 1500))
-        t += int(self.rng.uniform(10, 90) * 60)
+        # 10 minutes to 4 hours later: the slow end implies "only" 400-1,000 km/h,
+        # overlapping with genuine travellers who just stepped off a flight.
+        t += int(self.rng.uniform(10, 240) * 60)
         for _ in range(int(self.rng.integers(1, 4))):
             m = int(self.pop.random_cp_merchant_in_city(self.rng, np.array([far_city]))[0])
             self._add(card, m, t, self._amount(200, 0.6), None, "impossible_travel")
             t += int(self.rng.uniform(5, 30) * 60)
 
     def high_amount(self) -> None:
-        """One purchase 8-25x the card's normal spend at a merchant it never used."""
-        card = int(self.rng.integers(self.pop.n_cards))
+        """One purchase 3-20x the card's normal spend at a merchant it never used."""
+        card = self._victim()
         candidates = self.pop.merchants_in(["electronics_net", "travel", "shopping_pos"])
         candidates = np.setdiff1d(candidates, self.pop.card_favorites[card])
-        amount = min(self.card_mean_amount[card] * self.rng.uniform(8, 25), 15_000)
-        device = self._new_fraud_device() if self.rng.random() < 0.6 else None
+        # Overlaps with genuine big-ticket purchases (4-15x) on purpose.
+        amount = min(self.card_mean_amount[card] * self.rng.uniform(3, 20), 15_000)
+        device = self._new_fraud_device() if self.rng.random() < 0.4 else None
         self._add(
             card,
             self._pick(candidates),
@@ -539,38 +574,40 @@ class _FraudInjector:
         )
 
     def night_burst(self) -> None:
-        """Several 1-4am transactions in high-risk categories within ~90 minutes."""
-        card = int(self.rng.integers(self.pop.n_cards))
-        device = self._new_fraud_device()
+        """A few late-night transactions in high-risk categories within ~90 minutes."""
+        card = self._victim()
+        device = self._new_fraud_device() if self.rng.random() < 0.7 else None
         risky = self.pop.merchants_in(["gambling_net", "money_transfer"])
         day = int(self.rng.integers(self.n_days - 1))
-        t = self.start_epoch + day * SECONDS_PER_DAY + int(self.rng.uniform(1, 3.5) * 3600)
-        for _ in range(int(self.rng.integers(3, 7))):
+        t = self.start_epoch + day * SECONDS_PER_DAY + int(self.rng.uniform(0.5, 4) * 3600)
+        for _ in range(int(self.rng.integers(2, 6))):
             self._add(card, self._pick(risky), t, self._amount(120, 0.7), device, "night_burst")
             t += int(self.rng.uniform(3, 25) * 60)
 
     def compromised_merchant(self) -> None:
-        """A ring cashes out many stolen cards at one online merchant within an hour."""
+        """A ring cashes out many stolen cards at one online merchant within hours."""
         merchant = self._pick(
             self.pop.merchants_in(["shopping_net", "electronics_net", "misc_net"])
         )
-        n_cards = min(int(self.rng.integers(15, 41)), self.pop.n_cards)
-        cards = self.rng.choice(self.pop.n_cards, n_cards, replace=False)
+        n_cards = min(int(self.rng.integers(6, 31)), self.pop.n_cards)
+        cards = self.rng.choice(self.pop.n_cards, n_cards, replace=False, p=self.card_p)
         ring_devices = [f"{self._new_fraud_device()}-{k}" for k in range(3)]
         t0 = self._random_time()
         for card in cards:
+            # Spread over up to 3 hours, half through hijacked victim sessions.
+            device = self.rng.choice(ring_devices) if self.rng.random() < 0.5 else None
             self._add(
                 int(card),
                 merchant,
-                t0 + int(self.rng.uniform(0, 3600)),
+                t0 + int(self.rng.uniform(0, 3 * 3600)),
                 self._amount(90, 0.5),
-                self.rng.choice(ring_devices),
+                device,
                 "compromised_merchant",
             )
 
     def gift_card_cashout(self) -> None:
         """Drift-only pattern: gift cards bought from the victim's own device by day."""
-        card = int(self.rng.integers(self.pop.n_cards))
+        card = self._victim()
         cust = self.pop.card_customer[card]
         device = str(_device_ids(np.array([cust]), np.array([0]))[0])
         merchants = self.pop.merchants_in(["gift_cards"])

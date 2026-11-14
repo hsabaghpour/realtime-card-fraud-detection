@@ -49,18 +49,26 @@ def outputs_exist() -> bool:
     return Path(p.silver).exists() and Path(p.report("dq_metrics.json")).exists()
 
 
-@st.cache_data(show_spinner="Loading silver transactions…")
-def _read_delta(path: str, columns: tuple[str, ...] | None = None) -> pd.DataFrame:
+@st.cache_data(show_spinner="Loading transactions…")
+def _read_delta(path: str, columns: tuple[str, ...] | None, stamp: float) -> pd.DataFrame:
+    # ``stamp`` is part of the cache key, so a rebuilt table is reloaded.
     return DeltaTable(path).to_pandas(columns=list(columns) if columns else None)
 
 
+def _delta(path: str, columns: tuple[str, ...] | None = None) -> pd.DataFrame:
+    # Last commit time of the table. (Not the Delta version: `make demo` deletes
+    # and recreates tables, so the version restarts at 0.)
+    stamp = max(p.stat().st_mtime for p in Path(path, "_delta_log").glob("*.json"))
+    return _read_delta(path, columns, stamp)
+
+
 def silver() -> pd.DataFrame:
-    df = _read_delta(paths().silver, tuple(SILVER_COLUMNS))
+    df = _delta(paths().silver, tuple(SILVER_COLUMNS))
     return df.sort_values("ts", kind="stable").reset_index(drop=True)
 
 
 def quarantine() -> pd.DataFrame:
-    return _read_delta(paths().quarantine)
+    return _delta(paths().quarantine)
 
 
 def gold_exists() -> bool:
@@ -71,13 +79,38 @@ def gold_exists() -> bool:
 def gold() -> pd.DataFrame:
     from sentinelpay.features.registry import FEATURE_NAMES
 
-    return _read_delta(paths().gold, ("transaction_id", "is_fraud", *FEATURE_NAMES))
+    return _delta(paths().gold, ("transaction_id", "is_fraud", *FEATURE_NAMES))
+
+
+MODEL_REPORTS = (
+    "metrics.json",
+    "test_predictions.parquet",
+    "test_alerts.parquet",
+    "registry.json",
+    "promotion.json",
+)
+
+
+def model_outputs_exist() -> bool:
+    return all(Path(paths().report(n)).exists() for n in MODEL_REPORTS)
 
 
 @st.cache_data
-def _read_json(path: str) -> dict[str, Any]:
+def _read_parquet(path: str, mtime: float) -> pd.DataFrame:  # mtime: refresh after retraining
+    return pd.read_parquet(path)
+
+
+def report_table(name: str) -> pd.DataFrame:
+    path = paths().report(name)
+    return _read_parquet(path, Path(path).stat().st_mtime)
+
+
+@st.cache_data
+def _read_json(path: str, mtime: float | None = None) -> dict[str, Any]:
     return json.loads(Path(path).read_text())
 
 
 def report(name: str) -> dict[str, Any]:
-    return _read_json(paths().report(name))
+    path = paths().report(name)
+    # Keyed on modification time so a re-run of the pipeline shows up on reload.
+    return _read_json(path, Path(path).stat().st_mtime)

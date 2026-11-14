@@ -4,6 +4,14 @@
 spark:
   shuffle_partitions: 32
 
+mlflow:
+  # Databricks-managed MLflow with the Unity Catalog model registry
+  # (three-level model names).
+  tracking_uri: "databricks"
+  artifact_root: ""
+  model_name: "workspace.sentinelpay.sentinelpay_fraud"
+  experiment: "/Shared/sentinelpay-fraud"
+
 paths:
   data_root: "/Volumes/workspace/sentinelpay/data"
   reports_dir: "/Volumes/workspace/sentinelpay/reports"

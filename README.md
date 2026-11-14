@@ -1,18 +1,19 @@
 # SentinelPay: Real-Time Card Fraud Detection
 
-> 🚧 **Work in progress.** Phases 1–2 of 7 (data foundation, features) are complete. Model training,
-> streaming scoring, drift monitoring and the interactive dashboard are on the
-> [roadmap](#roadmap) below.
+> 🚧 **Work in progress.** Phases 1–3 of 7 (data foundation, features, model) are
+> complete. Streaming scoring, drift monitoring, orchestration and the full dashboard are
+> on the [roadmap](#roadmap) below.
 
 SentinelPay is an end-to-end card fraud detection platform built the way a production
-system would be. It ingests a stream of card transactions, cleans and validates them in a
-Delta Lake lakehouse, and (in later phases) engineers point-in-time features with PySpark,
-trains and explains a fraud model, scores transactions in real time and monitors the model
-for drift.
+system would be. It ingests card transactions into a Delta Lake lakehouse, validates them,
+engineers point-in-time features with PySpark, and trains an explainable LightGBM model
+tracked in MLflow. The alert threshold is chosen by business cost, not a default 50%.
+Coming next: real-time scoring and drift monitoring.
 
 **All data is synthetic.** A built-in deterministic generator produces realistic
-cardholder behaviour plus five labelled fraud patterns, so the whole project runs with no
-downloads, accounts or API keys.
+cardholder behaviour, five labelled fraud patterns, and genuine "look-alike" behaviour
+(night owls, big purchases, new phones), so the project runs with no downloads,
+accounts or API keys.
 
 ---
 
@@ -23,27 +24,26 @@ downloads, accounts or API keys.
 ```bash
 git clone https://github.com/hsabaghpour/realtime-card-fraud-detection.git
 cd realtime-card-fraud-detection
-make demo
+make demo   # ~1 minute: data -> bronze -> silver -> gold -> train -> promote
+make app    # dashboard at http://localhost:8501
 ```
 
-`make demo` creates a virtualenv with pinned dependencies, generates ~500k transactions,
-and runs them through the bronze, silver and gold (feature) layers in about a minute and a half.
-Use `SAMPLE_SIZE=50000 make demo` for a faster run.
-
-If Java isn't found, `make` tells you how to install it
-(`brew install openjdk@17` on macOS, `apt-get install openjdk-17-jdk-headless` on Ubuntu).
+`make demo` creates a virtualenv with pinned dependencies and runs the whole pipeline on
+~500k transactions. Use `SAMPLE_SIZE=50000 make demo` for a faster run. If Java isn't
+found, `make` tells you how to install it.
 
 | Command | What it does |
 |---|---|
 | `make demo` | Run the full pipeline end to end |
-| `make app` | Open the dashboard at http://localhost:8501 (after `make demo`) |
+| `make app` | Open the dashboard (Data Explorer, Model Performance, Threshold & Trade-off) |
+| `make mlflow` | Open the MLflow UI at http://localhost:5000 (runs, plots, model registry) |
 | `make test` | Run the test suite with coverage |
 | `make lint` / `make format` | Ruff lint and format |
-| `make generate` / `bronze` / `silver` / `gold` | Run a single step |
+| `make generate` / `bronze` / `silver` / `gold` / `train` / `promote` | Run a single step |
 | `make docs` | Regenerate the feature registry doc |
-| `make clean` | Delete generated data and reports |
+| `make clean` | Delete generated data, reports and MLflow store |
 
-## What exists today (Phase 1)
+## Architecture (today)
 
 ```mermaid
 flowchart LR
@@ -51,38 +51,62 @@ flowchart LR
     L --> B[(Bronze<br/>raw Delta + lineage)]
     B --> S[(Silver<br/>validated, de-duplicated)]
     B --> Q[(Quarantine<br/>with reject reasons)]
-    S --> DQ[reports/dq_metrics.json]
     S --> GF[(Gold<br/>point-in-time features)]
     R[[Feature registry]] -.defines.-> GF
     R -.defines.-> OF[Online features<br/>for real-time scoring]
+    GF --> T[Train: LightGBM vs baseline vs rules<br/>cost-based threshold, SHAP]
+    T --> M[(MLflow registry<br/>champion / challenger)]
+    T --> RP[reports/*.json]
+    RP --> APP[Streamlit dashboard]
 ```
 
-* **Synthetic data generator** ([`generator.py`](src/sentinelpay/data/generator.py)):
-  cardholders with home locations, spending habits and active hours; merchants across
-  16 categories in 20 US cities; ~6 months of history with weekly seasonality and
-  legitimate travel. It injects five fraud patterns (card testing, impossible travel,
-  high-amount anomaly, night-time burst, compromised merchant) at ~0.8%, with
-  **late-arriving labels** to simulate chargeback delay. It also generates a production
-  month for each of four drift scenarios (`none`, `new_fraud_pattern`, `spending_shift`,
-  `merchant_mix_shift`).
-* **Bronze** ([`bronze.py`](src/sentinelpay/pipeline/bronze.py)): appends the raw feed to
-  Delta with an enforced schema and lineage columns. Ingestion is idempotent: re-running
-  never double-loads a file.
-* **Silver** ([`silver.py`](src/sentinelpay/pipeline/silver.py)): validates every row,
-  sends failures to a quarantine table with *all* their reject reasons, de-duplicates
-  re-sent messages, and writes data-quality metrics.
-* **Gold feature table** ([`spark_features.py`](src/sentinelpay/features/spark_features.py)):
-  26 point-in-time features per transaction. They cover velocity, amount behaviour,
-  impossible-travel speed, new merchant/device, time of day, and merchant risk using only
-  labels known at the time. Every feature is defined once in the
-  [feature registry](docs/features.md). A pure-Python
-  [online version](src/sentinelpay/features/online_features.py) for real-time scoring is
-  tested to give identical values (training/serving parity).
-* **Dashboard preview** ([`app/`](app/)): a Streamlit *Data Explorer* with five tabs, including a Features tab that shows how the fraud rate changes with each feature.
-  It shows the data's shape, walks through a real example of each fraud pattern (with a
-  map for impossible travel), checks injected data problems against what silver caught,
-  and compares the drift scenarios. It reads Delta tables with `deltalake`, so it needs
-  no Spark or Java. The full 8-page dashboard arrives in Phase 5.
+* **Data** ([`generator.py`](src/sentinelpay/data/generator.py)): customers, cards and
+  merchants in 20 US cities with weekly seasonality, legitimate travel and *hard
+  negatives*. Five fraud patterns at ~0.8%, **late-arriving labels** (chargeback delay),
+  and a production month for each of four drift scenarios.
+* **Bronze / silver** ([`pipeline/`](src/sentinelpay/pipeline/)): schema-enforced,
+  idempotent ingestion; validation with a multi-reason quarantine; de-duplication;
+  data-quality metrics.
+* **Gold features** ([`features/`](src/sentinelpay/features/)): 26 **point-in-time**
+  features (velocity, amount behaviour, impossible-travel speed, novelty, time, merchant
+  risk using only labels known at the time). Defined once in the
+  [feature registry](docs/features.md), with a pure-Python online version proven
+  identical by a parity test.
+* **Model** ([`training/`](src/sentinelpay/training/)):
+  - **Time-based split** with a warm-up period.
+  - **LightGBM** with a square-root class weight and Platt calibration.
+  - **Baselines:** logistic regression and a hand-written rules engine.
+  - **Threshold** that minimises expected business cost, chosen on validation.
+  - **SHAP reason codes** in plain English.
+  - **MLflow** tracking and a **champion/challenger** registry.
+* **Dashboard** ([`app/`](app/)): Data Explorer, Model Performance, and an interactive
+  Threshold & Trade-off page. It reads Delta tables and reports only, so it needs no
+  Spark or Java.
+
+## Results
+
+<!-- RESULTS:START -->
+
+_Generated by `sentinelpay readme-results` from `reports/metrics.json` (2026-11-14T22:43:32+00:00). Test window **2025-06-01 → 2025-07-01**: 88,411 transactions, 604 frauds, never seen in training. **Synthetic data**: absolute numbers are higher than on real fraud data; the comparison between approaches is the point._
+
+| Approach | PR-AUC | Fraud caught @ 0.5% false alarms | Fraud caught | Alerts that are fraud | Alerts / day | Expected cost |
+|---|---|---|---|---|---|---|
+| **LightGBM (champion)** | 0.935 | 93.9% | 95.4% | 46.3% | 40.1 | $13,215 |
+| Logistic regression | 0.710 | 75.7% | 90.7% | 24.2% | 73.1 | $25,325 |
+| Rules engine | — | — | 43.7% | 12.8% | 66.7 | $95,345 |
+| No model | — | — | 0% | — | 0 | $151,000 |
+
+Expected cost = missed frauds × $250 + alerts × $5. The model saves **$82,130** vs. the rules engine over 31 days.
+
+| Fraud caught by attack type | LightGBM | Logistic regression | Rules |
+|---|---|---|---|
+| Card testing | 97.9% | 92.3% | 22.6% |
+| Impossible travel | 100.0% | 100.0% | 43.7% |
+| High amount | 85.4% | 80.6% | 70.9% |
+| Night burst | 100.0% | 91.4% | 100.0% |
+| Compromised merchant | 88.6% | 85.7% | 0.0% |
+
+<!-- RESULTS:END -->
 
 ## Roadmap
 
@@ -90,15 +114,15 @@ flowchart LR
 |---|---|---|
 | 1. Foundation | Config, generator, bronze/silver, data quality | ✅ |
 | 2. Features | Point-in-time PySpark features, feature registry, online/offline parity | ✅ |
-| 3. Model | LightGBM vs. baseline, cost-based threshold, SHAP reason codes, MLflow registry | ⏳ |
+| 3. Model | LightGBM vs. baselines, cost-based threshold, SHAP reason codes, MLflow registry | ✅ |
 | 4. Scoring & monitoring | Batch + Structured Streaming scoring, PSI drift, delayed-label metrics | ⏳ |
-| 5. GUI | 8-page Streamlit dashboard, hosted demo | ⏳ |
+| 5. GUI | Full 8-page Streamlit dashboard, hosted demo | ⏳ |
 | 6. MLOps | Airflow DAGs, Docker Compose, CI, Databricks Asset Bundle | ⏳ |
 | 7. Polish | Docs, walkthrough, optional GenAI analyst assistant | ⏳ |
 
 ## Docs
 
-* [Design decisions](docs/design_decisions.md)
+* [Design decisions](docs/design_decisions.md): the *why* behind every choice
 * [Feature registry](docs/features.md)
 * [Data dictionary](docs/data_dictionary.md)
 

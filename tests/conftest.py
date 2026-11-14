@@ -24,6 +24,11 @@ def settings(tmp_path: Path) -> Settings:
                 "data_root": str(tmp_path / "data"),
                 "reports_dir": str(tmp_path / "reports"),
             },
+            # Each test gets its own MLflow store, never the real mlflow.db.
+            "mlflow": {
+                "tracking_uri": f"sqlite:///{tmp_path / 'mlflow.db'}",
+                "artifact_root": str(tmp_path / "mlruns"),
+            },
         },
     )
 

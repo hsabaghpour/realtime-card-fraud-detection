@@ -55,6 +55,29 @@ def cmd_gold(settings: Settings, args: argparse.Namespace) -> None:
     _with_spark(spark_features.run)(settings, args)
 
 
+def cmd_train(settings: Settings, args: argparse.Namespace) -> None:
+    from sentinelpay.training import train
+
+    train.run(settings)
+
+
+def cmd_promote(settings: Settings, args: argparse.Namespace) -> None:
+    from sentinelpay.training import promote
+
+    promote.run(settings)
+
+
+def cmd_readme_results(settings: Settings, args: argparse.Namespace) -> None:
+    """Rewrite the README results block from reports/metrics.json."""
+    from sentinelpay.reporting import update_readme
+    from sentinelpay.utils.io import read_json
+
+    readme = Path(__file__).resolve().parents[2] / "README.md"
+    if not update_readme(readme, read_json(settings.paths.report("metrics.json"))):
+        raise SystemExit("README.md has no <!-- RESULTS:START/END --> markers")
+    log.info("updated results in %s", readme)
+
+
 FEATURES_DOC = Path(__file__).resolve().parents[2] / "docs" / "features.md"
 
 
@@ -83,6 +106,7 @@ def cmd_demo(settings: Settings, args: argparse.Namespace) -> None:
     from sentinelpay.data import generator
     from sentinelpay.features import spark_features
     from sentinelpay.pipeline import bronze, silver
+    from sentinelpay.training import promote, train
     from sentinelpay.utils.spark import get_spark
 
     reset_lakehouse(settings)
@@ -97,6 +121,10 @@ def cmd_demo(settings: Settings, args: argparse.Namespace) -> None:
         silver.run(spark, settings)
     with timed("gold", timings):
         spark_features.run(spark, settings)
+    with timed("train", timings):
+        train.run(settings)
+    with timed("promote", timings):
+        promote.run(settings)
 
     timings["total"] = round(sum(timings.values()), 2)
     write_json(settings.paths.report("timings.json"), timings)
@@ -108,6 +136,9 @@ COMMANDS: dict[str, tuple[Callable[[Settings, argparse.Namespace], None], str]] 
     "bronze": (cmd_bronze, "ingest the history landing zone into the bronze Delta table"),
     "silver": (cmd_silver, "validate, quarantine and de-duplicate bronze into silver"),
     "gold": (cmd_gold, "build the point-in-time gold feature table from silver"),
+    "train": (cmd_train, "train + evaluate models, log to MLflow, register a challenger"),
+    "promote": (cmd_promote, "promote the challenger to champion if it beats the current one"),
+    "readme-results": (cmd_readme_results, "rewrite the README results table from metrics.json"),
     "features-doc": (cmd_features_doc, "regenerate docs/features.md from the feature registry"),
     "demo": (cmd_demo, "run the full pipeline end to end"),
 }

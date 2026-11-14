@@ -86,6 +86,29 @@ class Paths:
 
 
 @dataclass(frozen=True)
+class ModelSettings:
+    """Training split, business costs and LightGBM hyper-parameters."""
+
+    warmup_days: int
+    validation_days: int
+    test_days: int
+    cost_missed_fraud: float
+    cost_alert_review: float
+    shap_sample: int
+    lgbm: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class MlflowSettings:
+    """Where experiments and the model registry live."""
+
+    tracking_uri: str
+    artifact_root: str
+    experiment: str
+    model_name: str
+
+
+@dataclass(frozen=True)
 class Settings:
     """Top-level, immutable application settings."""
 
@@ -94,6 +117,8 @@ class Settings:
     data: DataSettings
     spark: SparkSettings
     paths: Paths
+    model: ModelSettings
+    mlflow: MlflowSettings
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -125,6 +150,8 @@ def _env_overrides() -> dict[str, Any]:
         out.setdefault("paths", {})["data_root"] = v
     if v := os.environ.get("SENTINELPAY_REPORTS_DIR"):
         out.setdefault("paths", {})["reports_dir"] = v
+    if v := os.environ.get("SENTINELPAY_MLFLOW_URI"):
+        out.setdefault("mlflow", {})["tracking_uri"] = v
     return out
 
 
@@ -136,6 +163,14 @@ def _resolve(path: str) -> str:
     if "://" in path or Path(path).is_absolute():
         return path
     return str((PROJECT_ROOT / path).resolve())
+
+
+def _resolve_tracking_uri(uri: str) -> str:
+    """Make a relative ``sqlite:///file.db`` absolute so every process shares one DB."""
+    prefix = "sqlite:///"
+    if uri.startswith(prefix) and not uri[len(prefix) :].startswith("/"):
+        return prefix + _resolve(uri[len(prefix) :])
+    return uri
 
 
 def load_settings(env: str | None = None, overrides: dict[str, Any] | None = None) -> Settings:
@@ -154,5 +189,14 @@ def load_settings(env: str | None = None, overrides: dict[str, Any] | None = Non
         paths=Paths(
             data_root=_resolve(raw["paths"]["data_root"]),
             reports_dir=_resolve(raw["paths"]["reports_dir"]),
+        ),
+        model=ModelSettings(**raw["model"]),
+        mlflow=MlflowSettings(
+            tracking_uri=_resolve_tracking_uri(raw["mlflow"]["tracking_uri"]),
+            artifact_root=_resolve(raw["mlflow"]["artifact_root"])
+            if raw["mlflow"]["artifact_root"]
+            else "",
+            experiment=raw["mlflow"]["experiment"],
+            model_name=raw["mlflow"]["model_name"],
         ),
     )

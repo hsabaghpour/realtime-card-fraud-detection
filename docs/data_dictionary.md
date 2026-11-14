@@ -44,12 +44,25 @@
 
 | Pattern | What happens | Signal a model can learn |
 |---|---|---|
-| `card_testing` | 3–8 online charges of $0.50–$3 within minutes from a new device, then one large purchase | Burst velocity, tiny amounts, new device |
-| `impossible_travel` | Card-present use in a city >1500 km away, 10–90 min after a legit use | Implied travel speed |
-| `high_amount` | One purchase at 8–25× the card's usual spend at a merchant it never used | Amount z-score, new merchant |
-| `night_burst` | 3–6 gambling / money-transfer charges between 1 and 6 am | Hour, risky category, velocity |
-| `compromised_merchant` | 15–40 different stolen cards used at one online merchant within an hour, from a few shared devices | Distinct cards per merchant per hour |
+| `card_testing` | 2–6 online charges of $0.50–$3, 1–20 minutes apart, then one large purchase. Two-thirds come from a new device, the rest through a hijacked session | Burst velocity, tiny amounts, new device |
+| `impossible_travel` | Card-present use in a city >1500 km away, 10 minutes to 4 hours after a legit use. The slow end overlaps with genuine flights | Implied travel speed, distance from home |
+| `high_amount` | One purchase at 3–20× the card's usual spend at a merchant it never used. Overlaps with genuine big-ticket buys | Amount z-score, new merchant |
+| `night_burst` | 2–5 gambling / money-transfer charges between about midnight and 6 am | Hour, risky category, velocity |
+| `compromised_merchant` | 6–30 different stolen cards used at one online merchant within 3 hours, half from a few shared devices | Distinct cards per merchant per hour |
 | `gift_card_cashout` | *Production drift only.* 2–4 gift-card purchases by day from the victim's own device | Deliberately hard: few existing signals fire |
+
+Victim cards are chosen in proportion to how much each card is used, so "low-activity card" is not a fake fraud signal.
+
+## Genuine look-alikes ("hard negatives")
+
+Real fraud overlaps with genuine behaviour. Without these, every fraud signal would be a perfect rule and the model would look unrealistically good:
+
+| Behaviour | Share | Looks like |
+|---|---|---|
+| Night owls whose spending peaks around 1 am | 4% of customers | Night-time burst |
+| Genuine big-ticket purchases at 4–15× the usual amount (travel, electronics, home) | 4% of purchases in those categories | High-amount anomaly |
+| Online purchases from a genuinely new device (new phone, work laptop) | 4% of online purchases | Card testing / account takeover |
+| Out-of-town trips (some starting hours after a purchase at home) | 25% of cards | Impossible travel |
 
 ## Drift scenarios (production period only)
 

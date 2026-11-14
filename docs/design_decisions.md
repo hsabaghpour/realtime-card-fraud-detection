@@ -159,6 +159,96 @@ Phase 4 discusses this trade-off for streaming scoring.
 The synthetic data has no time zones, so hour features use UTC. A real system would use
 the merchant's (or cardholder's) local time, since "3 am" only means "unusual" locally.
 
+## Model (Phase 3)
+
+### Making the synthetic data honest
+The first model scored a PR-AUC of **0.992** with 99% recall. That would make an
+experienced fraud data scientist suspicious, not impressed. It happened because the
+generator made fraud perfectly separable: every card tester used a new device, nobody
+genuine shopped at 3 am, every big purchase was fraud. Two fixes in the generator:
+* **Hard negatives:** night owls, genuine big-ticket purchases, genuinely new devices.
+  These are realistic look-alikes, so every signal is a *risk indicator*, not proof.
+* **Stealthier fraud:** smaller amount spikes, travel "only" 400–1,000 km/h on the slow
+  end (overlapping real flights), attackers using hijacked sessions instead of new
+  devices, and slower merchant attacks.
+
+SHAP then exposed a **simulator artefact**: "card has little history" was the #2
+feature, because the generator picked fraud victims uniformly while genuine spending
+comes mostly from busy cards. A model should learn fraud, not the simulator, so victims
+are now picked in proportion to card activity, and the feature dropped to #7.
+
+The result is PR-AUC ≈ 0.94 for LightGBM vs. ≈ 0.71 for the baseline. That is still
+higher than on real fraud data (where 0.3–0.7 is common), and the README says so. The
+*comparisons* between approaches are the meaningful part.
+
+### Time-based split with a warm-up
+`[14-day warm-up dropped] | train (~3.5 months) | validation (May) | test (June)`.
+* **Not random:** random splits leak (same attack, same card, same week in train and
+  test) and let the model learn from the future.
+* **Warm-up dropped:** in the first two weeks every card looks "new", which says
+  nothing about fraud.
+* **Validation is used for three things only:** early stopping, calibration and
+  choosing the threshold. Test is touched once, for the final numbers. The threshold
+  chosen in May is ~$1,200 worse on June data than June's own optimum. That gap is the
+  honest price of not peeking, and the Threshold page shows it.
+* **Limitation:** training uses ground-truth labels. In production, the most recent
+  ~45 days would only have *partially* matured labels (chargebacks still arriving), so
+  you either train on matured data only or accept some label noise. Phase 4 monitoring
+  handles label delay explicitly.
+
+### Imbalance: square-root class weight, then Platt calibration
+* `scale_pos_weight = sqrt(#legit / #fraud)` ≈ 11 focuses the trees on fraud without the
+  full ~125x weight, which overfits the few fraud rows.
+* Weighting inflates probabilities, so **Platt scaling** (a 1-D logistic regression on
+  the validation log-odds) maps them back. A score of 0.3 then means ~30% of such
+  transactions are fraud. Platt is monotone, so it can't change PR-AUC or the ranking.
+  It only fixes the probability scale, which matters for cost-based thresholds and for
+  analysts reading scores. Isotonic regression was rejected because its step function
+  creates ties that degrade ranking.
+
+### Threshold = minimum expected cost, chosen on validation
+`cost = missed frauds × $250 + alerts × $5`, both configurable. The cost curve is
+computed for every distinct threshold in O(n log n) with cumulative sums, and tied
+scores are always alerted together. The GUI lets a manager change both costs and see
+the optimal threshold move.
+
+### Baselines that answer the manager's first question
+* **Logistic regression** (signed-log transform, median imputation with missing
+  indicators, one-hot category, balanced class weight): the simple, explainable model.
+* **A rules engine** with six hand-written rules, one per known pattern: "what we had
+  before ML". It catches 44% of fraud at 13% precision. The gap to the model is the
+  business case.
+* **No model:** every fraud is missed.
+
+### SHAP via LightGBM's native TreeSHAP
+`booster.predict(X, pred_contrib=True)` computes exact TreeSHAP, the same algorithm as
+`shap.TreeExplainer`, with no extra dependency. (The `shap` package pulls in `numba`,
+which often lags new NumPy releases.) Reason codes are the top 3 *positive*
+contributions per alert in plain English. Two details:
+* **Missing values are informative:** an online purchase has no physical location,
+  and LightGBM learns that this raises risk. The reason says "Online purchase: no
+  physical location to verify", not "dist_from_home_km not available".
+* **Duplicate reasons are merged:** three geo features saying the same thing become one
+  reason, so the analyst sees three *different* reasons.
+
+### MLflow: one model object, champion/challenger aliases
+* `FraudScorer` (booster + categories + Platt + threshold) is a plain Python class with
+  no MLflow dependency. Batch scoring, streaming, the GUI and tests all use it. MLflow
+  wraps it as a `pyfunc`, and a test checks the registered model scores identically to
+  the in-memory one.
+* The signature declares integer features as doubles, because at serving time a missing
+  value turns an int column into a float, which an int schema would reject.
+* Aliases, not stages: training registers a version as `challenger`. `promote`
+  re-scores challenger **and** champion on the same current test window and moves
+  `champion` only if the challenger wins on PR-AUC **and** cost. Training is
+  deterministic, so retraining on the same data creates an identical v2 that is
+  correctly *not* promoted. Rollback is moving an alias.
+* `pyfunc` models are pickled, and MLflow rightly warns that unpickling runs code. Models
+  are only ever loaded from this project's own registry, so the warning is silenced
+  with a comment saying why.
+* On Databricks the same code uses the Unity Catalog registry (three-level name in
+  `configs/databricks.yaml`).
+
 ## Runtime
 
 ### Spark 4 + Delta 4, Java 17

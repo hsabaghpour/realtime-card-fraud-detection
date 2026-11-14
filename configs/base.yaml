@@ -22,6 +22,33 @@ data:
   label_delay_median_days: 10
   chargeback_window_days: 45
 
+model:
+  # Time-based split of the history period (never random: we always predict
+  # the future from the past). The first days are dropped because every
+  # card's features start "cold" (no history yet).
+  warmup_days: 14
+  validation_days: 31
+  test_days: 31
+  # Business costs used to pick the alert threshold.
+  cost_missed_fraud: 250.0   # average loss when fraud goes undetected
+  cost_alert_review: 5.0     # analyst time to review one alert
+  shap_sample: 20000         # rows used for global SHAP importance
+  lgbm:
+    n_estimators: 2000       # upper bound; early stopping picks the real number
+    learning_rate: 0.05
+    num_leaves: 31
+    min_child_samples: 50
+    subsample: 0.8
+    subsample_freq: 1
+    colsample_bytree: 0.8
+    reg_lambda: 1.0
+
+mlflow:
+  tracking_uri: "sqlite:///mlflow.db"   # relative paths resolve to the project root
+  artifact_root: "mlruns"
+  experiment: "sentinelpay-fraud"
+  model_name: "sentinelpay-fraud"
+
 spark:
   master: "local[*]"
   driver_memory: "2g"
